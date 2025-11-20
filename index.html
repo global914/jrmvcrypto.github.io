@@ -1,0 +1,235 @@
+<html>
+
+<head></head>
+
+<body>
+<?php
+// Claves de API (no necesarias para endpoints públicos en este caso)
+$apiKey = 'TU_API_KEY';
+$apiSecret = 'TU_API_SECRET';
+
+// Endpoint para estadísticas de 24h
+$url = 'https://api.binance.com/api/v3/ticker/24hr';
+
+// Inicializar cURL para obtener estadísticas
+$ch = curl_init();
+curl_setopt($ch, CURLOPT_URL, $url);
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+$response = curl_exec($ch);
+curl_close($ch);
+
+// Decodificar JSON
+$stats = json_decode($response, true);
+
+// Lista de símbolos que deseas mostrar
+$symbols = [
+    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'XLMUSDT',
+    'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LTCUSDT', 'AAVEUSDT', 'LINKUSDT',
+    'MLNUSDT', 'DASHUSDT', 'ZENUSDT', 'ICPUSDT', 'LPTUSDT', 'ZECUSDT',
+    'DCRUSDT', 'NMRUSDT', 'ALCXUSDT', 'GIGGLEUSDT', 'BCHUSDT', 'GNOUSDT', 
+    'QNTUSDT', 'NMRUSDT', 'FARMUSDT'
+];
+
+// Función para obtener porcentajes de demanda y oferta
+function obtenerPorcentajeDemandaOferta($symbol) {
+    $url = "https://api.binance.com/api/v3/depth?symbol=$symbol&limit=5";
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    $response = curl_exec($ch);
+    curl_close($ch);
+
+    $depth = json_decode($response, true);
+    if (!isset($depth['bids']) || !isset($depth['asks'])) {
+        return ['demanda' => '-', 'oferta' => '-'];
+    }
+
+    $totalBids = 0;
+    foreach ($depth['bids'] as $bid) {
+        $totalBids += floatval($bid[1]); // volumen
+    }
+
+    $totalAsks = 0;
+    foreach ($depth['asks'] as $ask) {
+        $totalAsks += floatval($ask[1]); // volumen
+    }
+
+    $total = $totalBids + $totalAsks;
+    if ($total == 0) {
+        return ['demanda' => '-', 'oferta' => '-'];
+    }
+
+    $porcentajeDemanda = round(($totalBids / $total) * 100, 2);
+    $porcentajeOferta = round(($totalAsks / $total) * 100, 2);
+
+    return ['demanda' => $porcentajeDemanda, 'oferta' => $porcentajeOferta];
+}
+
+// Función para obtener velas japonesas
+function obtenerVelas($symbol, $interval = '1h', $limit = 6) {
+    $url = "https://api.binance.com/api/v3/klines?symbol=$symbol&interval=$interval&limit=$limit";
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    $response = curl_exec($ch);
+    curl_close($ch);
+
+    $klines = json_decode($response, true);
+    $resultado = [];
+
+    foreach ($klines as $kline) {
+        $apertura = floatval($kline[1]);
+        $maximo   = floatval($kline[2]);
+        $minimo   = floatval($kline[3]);
+        $cierre   = floatval($kline[4]);
+
+        $tipoVela = $cierre > $apertura ? 'Alcista' : ($cierre < $apertura ? 'Bajista' : 'Doji');
+
+        $resultado[] = [
+            'apertura' => $apertura,
+            'cierre'   => $cierre,
+            'maximo'   => $maximo,
+            'minimo'   => $minimo,
+            'tipo'     => $tipoVela
+        ];
+    }
+
+    return $resultado;
+}
+
+// Función para detectar patrones de velas japonesas
+function detectarPatron($velas, $index) {
+    if (!isset($velas[$index])) return '';
+
+    $vela = $velas[$index];
+    $apertura = $vela['apertura'];
+    $cierre   = $vela['cierre'];
+    $maximo   = $vela['maximo'];
+    $minimo   = $vela['minimo'];
+
+    $cuerpo = abs($cierre - $apertura);
+    $longitudTotal = $maximo - $minimo;
+    $superior = $maximo - max($apertura, $cierre);
+    $inferior = min($apertura, $cierre) - $minimo;
+
+    $patron = '';
+
+    // Hammer
+    if ($cuerpo < ($longitudTotal * 0.3) && $inferior > ($cuerpo * 2) && $superior < $cuerpo) {
+        $patron = 'Hammer Señal de reversion alcista tras una caida';
+    }
+
+    // Inverted Hammer
+    if ($cuerpo < ($longitudTotal * 0.3) && $superior > ($cuerpo * 2) && $inferior < $cuerpo) {
+        $patron = 'Inverted Hammer Posible inicio de reversion alcista';
+    }
+
+    // Bullish Engulfing
+    if ($index > 0) {
+        $prev = $velas[$index - 1];
+        if ($prev['tipo'] == 'Bajista' && $vela['tipo'] == 'Alcista' &&
+            $cierre > $prev['apertura'] && $apertura < $prev['cierre']) {
+            $patron = 'Bullish Engulfing Señal fuerte de cambio a tendencia alcista';
+        }
+    }
+
+    // Bearish Engulfing
+    if ($index > 0) {
+        $prev = $velas[$index - 1];
+        if ($prev['tipo'] == 'Alcista' && $vela['tipo'] == 'Bajista' &&
+            $apertura > $prev['cierre'] && $cierre < $prev['apertura']) {
+            $patron = 'Bearish Engulfing Señal fuerte de cambio a tendencia Bajista';
+        }
+    }
+
+    // Bullish Harami
+    if ($index > 0) {
+        $prev = $velas[$index - 1];
+        if ($prev['tipo'] == 'Bajista' && $vela['tipo'] == 'Alcista' &&
+            $cuerpo < abs($prev['cierre'] - $prev['apertura']) &&
+            $apertura > $prev['cierre'] && $cierre < $prev['apertura']) {
+            $patron = 'Bullish Harami Posible reversion Alcista';
+        }
+    }
+
+    // Bearish Harami
+    if ($index > 0) {
+        $prev = $velas[$index - 1];
+        if ($prev['tipo'] == 'Alcista' && $vela['tipo'] == 'Bajista' &&
+            $cuerpo < abs($prev['cierre'] - $prev['apertura']) &&
+            $apertura < $prev['cierre'] && $cierre > $prev['apertura']) {
+            $patron = 'Bearish Harami Posible reversion Bajista';
+        }
+    }
+
+    // Morning Star
+    if ($index > 1) {
+        $v1 = $velas[$index - 2];
+        $v2 = $velas[$index - 1];
+        $v3 = $vela;
+        if ($v1['tipo'] == 'Bajista' && abs($v2['cierre'] - $v2['apertura']) < ($longitudTotal * 0.2) &&
+            $v3['tipo'] == 'Alcista' && $v3['cierre'] > $v1['apertura']) {
+            $patron = 'Morning Star Señal clara de reversion alcista';
+        }
+    }
+
+    // Evening Star
+    if ($index > 1) {
+        $v1 = $velas[$index - 2];
+        $v2 = $velas[$index - 1];
+        $v3 = $vela;
+        if ($v1['tipo'] == 'Alcista' && abs($v2['cierre'] - $v2['apertura']) < ($longitudTotal * 0.2) &&
+            $v3['tipo'] == 'Bajista' && $v3['cierre'] < $v1['apertura']) {
+            $patron = 'Evening Star Señal clara de reversion Bajista';
+        }
+    }
+
+    return $patron;
+}
+
+// --- Aquí se integra en tu tabla ---
+echo "<html><body>";
+foreach ($stats as $coin) {
+    if (in_array($coin['symbol'], $symbols)) {
+        $porcentajes = obtenerPorcentajeDemandaOferta($coin['symbol']);
+        $velas = obtenerVelas($coin['symbol'], '1h', 6);
+
+        echo "<h2>" . $coin['symbol'] . "</h2>";
+        echo "<p>Último precio: " . $coin['lastPrice'] .
+            " | Mínimo 24h: " . $coin['lowPrice'] .
+            " | Máximo 24h: " . $coin['highPrice'] .
+            " | Demanda: " . $porcentajes['demanda'] . "%" .
+            " | Oferta: " . $porcentajes['oferta'] . "%" .
+            " | Cambio 24h: " . $coin['priceChangePercent'] . "%</p>";
+            if ($porcentajes['demanda'] > $porcentajes['oferta']) {
+                echo "<h3>" ."PREDOMINA COMPRA" ."</h3>";
+            }else {
+                echo "<h3>" ."PREDOMINA VENTA" ."</h3>";
+            }
+
+        echo "<table border='1' cellpadding='5' cellspacing='0'>";
+        echo "<tr><th>Hora</th><th>Apertura</th><th>Cierre</th><th>Mínimo</th><th>Máximo</th><th>Tipo de Vela</th><th>Patrón Detectado</th></tr>";
+
+        foreach ($velas as $i => $vela) {
+            $patron = detectarPatron($velas, $i);
+            echo "<tr>";
+            echo "<td>-" . (6 - $i) . "h</td>";
+            echo "<td>" . $vela['apertura'] . "</td>";
+            echo "<td>" . $vela['cierre'] . "</td>";
+            echo "<td>" . $vela['minimo'] . "</td>";
+            echo "<td>" . $vela['maximo'] . "</td>";
+            echo "<td>" . $vela['tipo'] . "</td>";
+            echo "<td>" . ($patron ?: '-') . "</td>";
+            echo "</tr>";
+        }
+
+        echo "</table><hr>";
+    }
+}
+echo "</body></html>";
+
+?>
+
+</body>
+
+</html>
